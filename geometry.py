@@ -1,0 +1,169 @@
+"""
+W7 Geometry — pure functions, full float precision
+===================================================
+
+Spec: W7_Journal_WorkOrder_v0 rev B (FROZEN 2026-07-18). Same
+no-internal-rounding discipline as W3's geometry: constants are exact
+fractions where possible, everything else carries full float
+precision to the renderer; rounding happens only at draw time inside
+ReportLab.
+
+THE CENTRAL RULE (rev B): all KDP math runs on TOTAL printed pages,
+never the customer-facing body count. TOTAL = body + FRONT_MATTER_PAGES
+(pinned at 4: half-title recto, blank verso, title recto, (c) verso —
+body opens recto on page 5). The gutter bracket is selected by TOTAL;
+the boundary trap, named in the order: body 150 -> total 154 -> 0.5"
+bracket. A body-count lookup selects 0.375" and manufactures a gutter
+violation exactly at the boundary.
+
+Author: Pronto Publishing
+"""
+
+from dataclasses import dataclass
+from typing import List, Tuple
+
+# ---------------------------------------------------------------------------
+# Trim + page accounting (rev B pinned)
+# ---------------------------------------------------------------------------
+
+TRIM_W_IN = 6.0
+TRIM_H_IN = 9.0
+POINTS_PER_INCH = 72.0
+
+# The three accepted 6x9 spellings — same literals discipline as W3.
+ACCEPTED_TRIM_LITERALS = ("6x9", "6 x 9", '6" x 9"')
+
+FRONT_MATTER_PAGES = 4          # half-title, blank, title, (c) — PINNED
+TOTAL_MIN = 24                  # KDP floor, TOTAL pages
+TOTAL_MAX = 828                 # KDP ceiling, TOTAL pages
+BODY_MIN = TOTAL_MIN - FRONT_MATTER_PAGES    # 20
+BODY_MAX = TOTAL_MAX - FRONT_MATTER_PAGES    # 824
+DEFAULT_BODY_PAGES = 120
+
+# ---------------------------------------------------------------------------
+# KDP gutter table — pinned (rev A amendment 2), selected by TOTAL
+# ---------------------------------------------------------------------------
+
+GUTTER_BRACKETS: Tuple[Tuple[int, int, float], ...] = (
+    (24, 150, 0.375),
+    (151, 300, 0.5),
+    (301, 500, 0.625),
+    (501, 700, 0.75),
+    (701, 828, 0.875),
+)
+
+# House margins. INSIDE = bracket floor + comfort pad; the pad keeps
+# the live area visually balanced against the 0.5" outside margin at
+# the low brackets without ever dipping under KDP's floor.
+INSIDE_COMFORT_PAD_IN = 0.125
+OUTSIDE_MARGIN_IN = 0.5
+TOP_MARGIN_IN = 0.625
+BOTTOM_MARGIN_IN = 0.625
+
+# ---------------------------------------------------------------------------
+# Template constants — exact fractions, no mm->in rounding mud
+# ---------------------------------------------------------------------------
+
+LINE_PITCH_IN = 5.0 / 16.0          # 0.3125" ruled pitch
+DOT_PITCH_IN = 5.0 / 25.4           # 5 mm bullet-journal grid, exact
+DOT_RADIUS_PT = 0.75
+LINE_WIDTH_PT = 0.5
+HEADER_RULE_WIDTH_PT = 1.1
+HEADER_RULE_GAP_IN = 0.125          # gap between header rule and first row
+INK_GRAY = 0.55                     # template ink (lines/dots), not text
+
+TEMPLATES = ("Lined", "Dot Grid", "Blank", "Prompted")
+
+
+class GutterBracketError(ValueError):
+    """TOTAL outside every pinned bracket — FAIL posture (pinned-table
+    discipline; §4). Unreachable when bounds are checked first, which
+    is exactly why it must be loud if it ever fires."""
+
+
+def total_pages(body_pages: int) -> int:
+    return body_pages + FRONT_MATTER_PAGES
+
+
+def gutter_for_total(total: int) -> float:
+    """Inside-gutter FLOOR in inches for TOTAL printed pages."""
+    for lo, hi, gutter in GUTTER_BRACKETS:
+        if lo <= total <= hi:
+            return gutter
+    raise GutterBracketError(
+        f"TOTAL {total} matches no pinned gutter bracket "
+        f"({GUTTER_BRACKETS[0][0]}-{GUTTER_BRACKETS[-1][1]})")
+
+
+def inside_margin_for_total(total: int) -> float:
+    return gutter_for_total(total) + INSIDE_COMFORT_PAD_IN
+
+
+@dataclass(frozen=True)
+class LiveArea:
+    """Printable region of one page, inches from bottom-left of trim."""
+    x0: float
+    y0: float
+    x1: float
+    y1: float
+
+    @property
+    def width(self) -> float:
+        return self.x1 - self.x0
+
+    @property
+    def height(self) -> float:
+        return self.y1 - self.y0
+
+
+def live_area(total: int, page_number: int) -> LiveArea:
+    """Live area for 1-based printed page number. Odd = recto (inside
+    margin on the LEFT edge of the sheet as bound = left side of a
+    recto), even = verso (inside on the right). Derived from
+    (trim, TOTAL) — rev B: a grid compliant at one TOTAL must
+    re-derive, not reuse, at another."""
+    inside = inside_margin_for_total(total)
+    recto = page_number % 2 == 1
+    left = inside if recto else OUTSIDE_MARGIN_IN
+    right = OUTSIDE_MARGIN_IN if recto else inside
+    return LiveArea(
+        x0=left,
+        y0=BOTTOM_MARGIN_IN,
+        x1=TRIM_W_IN - right,
+        y1=TRIM_H_IN - TOP_MARGIN_IN,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Template geometry — positions in inches within a LiveArea
+# ---------------------------------------------------------------------------
+
+def lined_rows(area: LiveArea, *, header_rule: bool = True,
+               pitch: float = LINE_PITCH_IN) -> List[float]:
+    """Y positions (page inches) of ruled lines, top to bottom. Rows
+    descend from the top of the live area at exact pitch; the last row
+    sits at or above y0. With header_rule, the first line is the rule
+    and rows resume after HEADER_RULE_GAP_IN."""
+    rows: List[float] = []
+    y = area.y1
+    if header_rule:
+        rows.append(y)
+        y -= pitch + HEADER_RULE_GAP_IN
+    while y >= area.y0:
+        rows.append(y)
+        y -= pitch
+    return rows
+
+
+def dot_grid_points(area: LiveArea,
+                    pitch: float = DOT_PITCH_IN) -> List[Tuple[float, float]]:
+    """Dot centers (page inches). The grid is CENTERED in the live
+    area: residual space is split evenly on both axes so the grid
+    never crowds one edge."""
+    import math
+    nx = int(math.floor(area.width / pitch)) + 1
+    ny = int(math.floor(area.height / pitch)) + 1
+    x_start = area.x0 + (area.width - (nx - 1) * pitch) / 2.0
+    y_start = area.y0 + (area.height - (ny - 1) * pitch) / 2.0
+    return [(x_start + i * pitch, y_start + j * pitch)
+            for j in range(ny) for i in range(nx)]
