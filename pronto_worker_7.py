@@ -43,6 +43,7 @@ from geometry import (
     POINTS_PER_INCH, TOTAL_MAX, TOTAL_MIN, TRIM_H_IN, TRIM_W_IN,
     TEMPLATES, total_pages,
 )
+from imprint import ImprintNotEligibleError, resolve_imprint
 from manifest import build_journal_manifest
 from render import PromptOverflowError, build_interior
 from lib.airtable_client import AirtableClient
@@ -54,7 +55,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WORKER_VERSION = "7.0.1-a1"
+WORKER_VERSION = "7.1.0-a1"
 
 PAGE_W_PT = TRIM_W_IN * POINTS_PER_INCH
 PAGE_H_PT = TRIM_H_IN * POINTS_PER_INCH
@@ -202,13 +203,24 @@ class JournalProcessor:
 
         isbn = (bm.get("ISBN") or "").strip() or None
 
+        # --- E4 imprint resolution (Manus Amendment 2 gate) ---
+        try:
+            imprint = resolve_imprint(bm, self.airtable_client)
+        except ImprintNotEligibleError as e:
+            raise ReviewHold("", str(e))
+        legacy = imprint["source"].startswith("legacy")
+        verdicts.append({"check": "imprint", "ok": True,
+                         "detail": f"{imprint['flag']} ({imprint['source']})"})
+
         # --- Render ---
         try:
             pdf_bytes, params = build_interior(
                 title=title, subtitle=subtitle, author=author,
                 template=template, body_pages=body,
                 copyright_year=datetime.now(timezone.utc).year,
-                isbn=isbn, prompts=prompts)
+                isbn=isbn, prompts=prompts,
+                imprint_display=imprint["canonical"].upper(),
+                published_by=None if legacy else imprint["canonical"])
         except PromptOverflowError as e:
             raise ReviewHold("W7-003", str(e))
 
@@ -240,6 +252,7 @@ class JournalProcessor:
                 "title": title, "subtitle": subtitle, "author": author,
                 "template": template, "isbn": isbn,
                 "prompt_count": len(prompts) if prompts else None,
+                "imprint": imprint,
             },
             params=params, validation=verdicts, warnings=warnings,
             interior_sha256=sha)

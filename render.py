@@ -137,7 +137,7 @@ def _paint_half_title(c, title: str) -> None:
 
 
 def _paint_title_page(c, title: str, subtitle: Optional[str],
-                      author: str) -> None:
+                      author: str, imprint_display: str = IMPRINT) -> None:
     y = PAGE_H_PT * 0.66
     for line in wrap_text(title.upper(), SERIF_MEDIUM, 24.0, PAGE_W_PT * 0.72):
         _draw_center(c, line, SERIF_MEDIUM, 24.0, y)
@@ -148,12 +148,17 @@ def _paint_title_page(c, title: str, subtitle: Optional[str],
             _draw_center(c, line, SERIF_ITALIC, 13.0, y)
             y -= 17.0
     _draw_center(c, author, SERIF, 14.0, PAGE_H_PT * 0.38)
-    _draw_tracked_center(c, IMPRINT, SERIF, 9.5, IMPRINT_TRACKING_PT,
+    _draw_tracked_center(c, imprint_display, SERIF, 9.5, IMPRINT_TRACKING_PT,
                          1.0 * POINTS_PER_INCH)
 
 
-def _paint_copyright(c, year: int, author: str, isbn: Optional[str]) -> None:
+def _paint_copyright(c, year: int, author: str, isbn: Optional[str],
+                     published_by: Optional[str] = None) -> None:
     lines = copyright_lines(year, author, isbn)
+    if published_by:
+        # E4: publisher flag line ahead of the machine's credit. The
+        # Pronto credit line below never changes (governance §7).
+        lines.insert(len(lines) - 3, f"Published by {published_by}")
     # Standard §3.4 sits low on the page, flush left within margins.
     y = 2.1 * POINTS_PER_INCH
     x = 1.0 * POINTS_PER_INCH
@@ -219,7 +224,9 @@ def build_interior(*, title: str, subtitle: Optional[str], author: str,
                    isbn: Optional[str] = None,
                    prompts: Optional[List[str]] = None,
                    page_numbers: bool = True,
-                   header_rule: bool = True) -> tuple:
+                   header_rule: bool = True,
+                   imprint_display: str = IMPRINT,
+                   published_by: Optional[str] = None) -> tuple:
     """Render the full interior. Returns (pdf_bytes, params) where
     params is the geometry/typography record for the manifest.
     Prompted template requires prompts, one per body page (validation
@@ -241,9 +248,11 @@ def build_interior(*, title: str, subtitle: Optional[str], author: str,
     _paint_half_title(c, title)          # 1: half-title recto
     c.showPage()
     c.showPage()                         # 2: blank verso
-    _paint_title_page(c, title, subtitle, author)   # 3: title recto
+    _paint_title_page(c, title, subtitle, author,
+                      imprint_display=imprint_display)   # 3: title recto
     c.showPage()
-    _paint_copyright(c, copyright_year, author, isbn)  # 4: (c) verso
+    _paint_copyright(c, copyright_year, author, isbn,
+                     published_by=published_by)  # 4: (c) verso
     c.showPage()
 
     # --- Body, opens recto on printed page 5 ---
@@ -273,6 +282,8 @@ def build_interior(*, title: str, subtitle: Optional[str], author: str,
         "total_pages": total,
         "page_numbers": page_numbers,
         "header_rule": header_rule if template in ("Lined",) else False,
+        "imprint_display": imprint_display,
+        "published_by": published_by,
         "fonts": [SERIF, SERIF_MEDIUM, SERIF_ITALIC],
     }
     return buf.getvalue(), params

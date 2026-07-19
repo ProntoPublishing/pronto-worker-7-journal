@@ -130,3 +130,25 @@ class AirtableClient:
         except Exception as e:
             logger.error(f"Failed to get book metadata {metadata_id}: {e}")
             return None
+
+    # --- E4 additions (2026-07-19): Imprints table readers -----------------
+    def get_imprint(self, imprint_id: str) -> Optional[Dict[str, Any]]:
+        """One Imprints row by record id (E4)."""
+        try:
+            t = self.api.table(self.base_id, 'Imprints')
+            return t.get(imprint_id)['fields']
+        except Exception as e:
+            logger.error(f"Failed to get imprint {imprint_id}: {e}")
+            return None
+
+    def get_default_imprint(self) -> Optional[Dict[str, Any]]:
+        """The single E4 Default row (Landfall Ink per governance §7).
+        Seven-row table — a full scan is cheap and needs no formula."""
+        try:
+            t = self.api.table(self.base_id, 'Imprints')
+            for rec in t.all():
+                if rec['fields'].get('E4 Default'):
+                    return rec['fields']
+        except Exception as e:
+            logger.error(f"Failed to scan Imprints for default: {e}")
+        return None

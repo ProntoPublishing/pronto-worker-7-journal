@@ -228,6 +228,10 @@ def _make_processor(bm=None):
         "Low-Content Template": {"name": "Lined"},
         "Low-Content Page Count": 120,
     }
+    # E4: default to the legacy path explicitly — a bare MagicMock is
+    # truthy and silently impersonates an eligible imprint record.
+    p.airtable_client.get_default_imprint.return_value = None
+    p.airtable_client.get_imprint.return_value = None
     p.r2_client = MagicMock()
     p.r2_client.upload_file_bytes.return_value = {"public_url": "https://r2/i"}
     p.r2_client.upload_json.return_value = {"public_url": "https://r2/m"}
@@ -360,6 +364,55 @@ class TestWorker(unittest.TestCase):
         self.assertIn("W7-004", result["error"])
         fields = p.airtable_client.update_service.call_args_list[-1].args[1]
         self.assertEqual(fields["Status"], "Failed")
+
+    def test_e4_linked_flag_without_bowker_string_holds(self):
+        p = _make_processor(bm={"Book Title": "T", "Author Name": "A",
+                                "Low-Content Template": {"name": "Lined"},
+                                "Low-Content Page Count": 120,
+                                "Imprint": ["impKeeping"]})
+        p.airtable_client.get_imprint.return_value = {
+            "Flag": "The Keeping Books"}   # no Bowker Canonical String
+        result = p.process_service("svcJournal")
+        self.assertEqual(result.get("status"), "Review")
+        self.assertIn("not E4-eligible", result["review_reason"])
+
+    def test_e4_linked_eligible_flag_renders(self):
+        p = _make_processor(bm={"Book Title": "T", "Author Name": "A",
+                                "Low-Content Template": {"name": "Lined"},
+                                "Low-Content Page Count": 120,
+                                "Imprint": ["impKeeping"]})
+        p.airtable_client.get_imprint.return_value = {
+            "Flag": "The Keeping Books",
+            "Bowker Canonical String": "The Keeping Books"}
+        result = p.process_service("svcJournal")
+        self.assertEqual(result.get("status"), "Complete", result)
+        manifest = p.r2_client.upload_json.call_args.kwargs["data"]
+        imp = manifest["inputs"]["imprint"]
+        self.assertEqual(imp["canonical"], "The Keeping Books")
+        self.assertEqual(manifest["geometry"]["template_params"]
+                         ["published_by"], "The Keeping Books")
+
+    def test_e4_default_eligible_flag_applies_without_link(self):
+        p = _make_processor()
+        p.airtable_client.get_default_imprint.return_value = {
+            "Flag": "Landfall Ink",
+            "Bowker Canonical String": "Landfall Ink", "E4 Default": True}
+        result = p.process_service("svcJournal")
+        self.assertEqual(result.get("status"), "Complete", result)
+        manifest = p.r2_client.upload_json.call_args.kwargs["data"]
+        self.assertEqual(manifest["inputs"]["imprint"]["canonical"],
+                         "Landfall Ink")
+
+    def test_e4_legacy_when_nothing_eligible(self):
+        p = _make_processor()
+        result = p.process_service("svcJournal")
+        self.assertEqual(result.get("status"), "Complete", result)
+        manifest = p.r2_client.upload_json.call_args.kwargs["data"]
+        imp = manifest["inputs"]["imprint"]
+        self.assertEqual(imp["canonical"], "Pronto Publishing")
+        self.assertIn("legacy", imp["source"])
+        self.assertIsNone(manifest["geometry"]["template_params"]
+                          ["published_by"])
 
     def test_idempotency_noop(self):
         p = _make_processor()
