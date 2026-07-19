@@ -12,14 +12,14 @@ Author: Pronto Publishing
 from typing import Dict, List
 
 from geometry import (
-    BODY_MAX, BODY_MIN, DOT_PITCH_IN, FRONT_MATTER_PAGES,
-    GUTTER_BRACKETS, INSIDE_COMFORT_PAD_IN, LINE_PITCH_IN,
-    OUTSIDE_MARGIN_IN, TOTAL_MAX, TOTAL_MIN, gutter_for_total,
-    inside_margin_for_total,
+    BODY_MAX, BODY_MIN, FRONT_MATTER_PAGES, GUTTER_BRACKETS,
+    INSIDE_COMFORT_PAD_IN, OUTSIDE_MARGIN_IN, TOTAL_MAX, TOTAL_MIN,
+    gutter_for_total, inside_margin_for_total,
 )
 
-SPEC_VERSION = "W7_Journal_WorkOrder_v0 rev B (FROZEN 2026-07-18)"
-MANIFEST_SCHEMA_VERSION = "journal_manifest.v1.0"
+SPEC_VERSION = ("W7_Journal_WorkOrder_v0 rev B (FROZEN 2026-07-18) + "
+                "W7_Trim_Expansion_WorkOrder_v0 (2026-07-19)")
+MANIFEST_SCHEMA_VERSION = "journal_manifest.v1.1"
 
 
 def build_journal_manifest(
@@ -49,15 +49,17 @@ def build_journal_manifest(
             "rule": "ALL KDP math runs on TOTAL, never body (rev B)",
         },
         "geometry": {
-            "trim": "6x9",
+            "trim": params["trim"],
+            "trim_in": params["trim_in"],
+            "type_scale": params["type_scale"],
             "gutter_bracket_in": gutter_for_total(total),
             "gutter_bracket_table": [list(b) for b in GUTTER_BRACKETS],
             "gutter_selected_by": "TOTAL pages",
             "inside_margin_in": inside_margin_for_total(total),
             "inside_comfort_pad_in": INSIDE_COMFORT_PAD_IN,
             "outside_margin_in": OUTSIDE_MARGIN_IN,
-            "line_pitch_in": LINE_PITCH_IN,
-            "dot_pitch_in": DOT_PITCH_IN,
+            "line_pitch_in": params["line_pitch_in"],
+            "dot_pitch_in": params["dot_pitch_in"],
             "template_params": params,
         },
         "validation": validation,

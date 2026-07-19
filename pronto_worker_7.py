@@ -18,8 +18,9 @@ code? Hold. Otherwise FAIL"):
 - W7-004 rendered page size != trim exactly, or page count != TOTAL
   -> FAIL (self-check; a wrong PDF is not human-fixable)
 - metadata incomplete (Title/Author) -> hold (unnumbered, same gate
-  machinery); non-6x9 trim -> hold (v0 scope is a business
-  conversation, not a code path)
+  machinery); trim outside the pinned table -> hold (trim expansion
+  2026-07-19: 6x9 / 8x10 / 8.5x11 per the E2 pattern; anything else
+  stays a business conversation, not a code path)
 
 Writes Interior Page Count = TOTAL at completion — same field, same
 semantics as W2 >=1.7.1; the COVER chain consumes it.
@@ -39,9 +40,9 @@ from typing import Dict, List, Optional
 from pypdf import PdfReader
 
 from geometry import (
-    ACCEPTED_TRIM_LITERALS, BODY_MAX, BODY_MIN, DEFAULT_BODY_PAGES,
-    POINTS_PER_INCH, TOTAL_MAX, TOTAL_MIN, TRIM_H_IN, TRIM_W_IN,
-    TEMPLATES, total_pages,
+    BODY_MAX, BODY_MIN, DEFAULT_BODY_PAGES, POINTS_PER_INCH,
+    TOTAL_MAX, TOTAL_MIN, TRIM_CANONICAL, TEMPLATES,
+    TrimRejectedError, parse_trim, total_pages,
 )
 from imprint import ImprintNotEligibleError, resolve_imprint
 from manifest import build_journal_manifest
@@ -55,10 +56,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WORKER_VERSION = "7.1.0-a1"
+WORKER_VERSION = "7.2.0-a1"
 
-PAGE_W_PT = TRIM_W_IN * POINTS_PER_INCH
-PAGE_H_PT = TRIM_H_IN * POINTS_PER_INCH
 _PAGE_SIZE_TOL_PT = 0.01     # exactness at float-compare granularity
 
 
@@ -156,12 +155,14 @@ class JournalProcessor:
         verdicts.append({"check": "metadata_required", "ok": True,
                          "detail": "title/author present"})
 
-        # --- Trim (v0: 6x9 only -> hold otherwise) ---
-        trim = (self._select_name(bm.get("Trim Size")) or "6x9").strip()
-        if trim not in ACCEPTED_TRIM_LITERALS:
-            raise ReviewHold("", f"trim {trim!r} not supported in v0 "
-                                 f"(6x9 only — E2 is the expansion lane)")
-        verdicts.append({"check": "trim", "ok": True, "detail": trim})
+        # --- Trim (pinned three-trim table; outside it -> hold — the
+        # posture that proved itself in soak run #1) ---
+        try:
+            trim = parse_trim(self._select_name(bm.get("Trim Size")))
+        except TrimRejectedError as e:
+            raise ReviewHold("", str(e))
+        trim_name = TRIM_CANONICAL[trim]
+        verdicts.append({"check": "trim", "ok": True, "detail": trim_name})
 
         # --- Template (W7-001: FAIL) ---
         template = self._select_name(bm.get("Low-Content Template"))
@@ -220,11 +221,14 @@ class JournalProcessor:
                 copyright_year=datetime.now(timezone.utc).year,
                 isbn=isbn, prompts=prompts,
                 imprint_display=imprint["canonical"].upper(),
-                published_by=None if legacy else imprint["canonical"])
+                published_by=None if legacy else imprint["canonical"],
+                trim=trim)
         except PromptOverflowError as e:
             raise ReviewHold("W7-003", str(e))
 
-        # --- Self-check (W7-004: FAIL) ---
+        # --- Self-check (W7-004: FAIL) — page size per the PARSED trim ---
+        page_w_pt = trim[0] * POINTS_PER_INCH
+        page_h_pt = trim[1] * POINTS_PER_INCH
         reader = PdfReader(io.BytesIO(pdf_bytes))
         n = len(reader.pages)
         if n != total:
@@ -234,14 +238,14 @@ class JournalProcessor:
         for idx, page in enumerate(reader.pages):
             box = page.mediabox
             w, h = float(box.width), float(box.height)
-            if abs(w - PAGE_W_PT) > _PAGE_SIZE_TOL_PT or \
-               abs(h - PAGE_H_PT) > _PAGE_SIZE_TOL_PT:
+            if abs(w - page_w_pt) > _PAGE_SIZE_TOL_PT or \
+               abs(h - page_h_pt) > _PAGE_SIZE_TOL_PT:
                 raise HardFailError(
                     f"self-check: page {idx + 1} is {w}x{h}pt, expected "
-                    f"{PAGE_W_PT}x{PAGE_H_PT}pt exactly (W7-004)")
+                    f"{page_w_pt}x{page_h_pt}pt exactly (W7-004)")
         verdicts.append({"check": "self_check", "ok": True,
                          "detail": f"{n} pages at "
-                                   f"{TRIM_W_IN}x{TRIM_H_IN}in exact"})
+                                   f"{trim[0]}x{trim[1]}in exact"})
 
         # --- Manifest + upload ---
         sha = hashlib.sha256(pdf_bytes).hexdigest()
@@ -271,6 +275,7 @@ class JournalProcessor:
         duration = (datetime.now(timezone.utc) - started_at).total_seconds()
         notes = {
             "template": template,
+            "trim": trim_name,
             "body_pages": body,
             "total_pages": total,
             "gutter_bracket_in": m["geometry"]["gutter_bracket_in"],

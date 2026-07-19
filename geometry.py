@@ -20,18 +20,94 @@ Author: Pronto Publishing
 """
 
 from dataclasses import dataclass
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 # ---------------------------------------------------------------------------
-# Trim + page accounting (rev B pinned)
+# Trim + page accounting (rev B pinned; trim table expanded per
+# W7_Trim_Expansion_WorkOrder_v0 2026-07-19 — the E2 pattern)
 # ---------------------------------------------------------------------------
 
+# 6x9 remains the reference design; these constants are its dims and
+# stay importable so the 6x9 goldens hold byte-identical.
 TRIM_W_IN = 6.0
 TRIM_H_IN = 9.0
 POINTS_PER_INCH = 72.0
 
-# The three accepted 6x9 spellings — same literals discipline as W3.
-ACCEPTED_TRIM_LITERALS = ("6x9", "6 x 9", '6" x 9"')
+REFERENCE_TRIM: Tuple[float, float] = (TRIM_W_IN, TRIM_H_IN)
+
+# Pinned trim table — the same three trims E2 gave W3, spelled the
+# same way (ASCII "x" and U+00D7 variants both live in production
+# Airtable data; the three-spellings lesson stands). Anything outside
+# this table HOLDs in the worker — no silently-plausible untested
+# geometry. 5x8 / 5.5x8.5 remain docketed with E2's.
+ACCEPTED_TRIM_LITERALS: Dict[str, Tuple[float, float]] = {
+    '6x9': (6.0, 9.0),
+    '6 x 9': (6.0, 9.0),
+    '6" x 9"': (6.0, 9.0),
+    '6" × 9"': (6.0, 9.0),
+    '8x10': (8.0, 10.0),
+    '8 x 10': (8.0, 10.0),
+    '8" x 10"': (8.0, 10.0),
+    '8" × 10"': (8.0, 10.0),
+    '8.5x11': (8.5, 11.0),
+    '8.5 x 11': (8.5, 11.0),
+    '8.5" x 11"': (8.5, 11.0),
+    '8.5" × 11"': (8.5, 11.0),
+}
+
+# Canonical short name per dims — manifests and Operator Notes speak
+# one spelling regardless of which literal the form sent.
+TRIM_CANONICAL: Dict[Tuple[float, float], str] = {
+    (6.0, 9.0): "6x9",
+    (8.0, 10.0): "8x10",
+    (8.5, 11.0): "8.5x11",
+}
+
+
+class TrimRejectedError(ValueError):
+    """Any trim outside the pinned table. The worker maps this to a
+    Review HOLD (v0 posture that proved itself in soak run #1)."""
+
+
+def parse_trim(value) -> Tuple[float, float]:
+    """Airtable Trim Size literal -> (w, h) inches. Exact literal
+    match against the pinned table; empty/None defaults to the 6x9
+    reference (the low-content lane's historical default)."""
+    literal = (str(value).strip() if value is not None else "")
+    if not literal:
+        return REFERENCE_TRIM
+    if literal not in ACCEPTED_TRIM_LITERALS:
+        raise TrimRejectedError(
+            f"trim {literal!r} not in the pinned trim table "
+            f"(accepted: {sorted(set(TRIM_CANONICAL.values()))}; widening "
+            f"the table is a versioned spec change)")
+    return ACCEPTED_TRIM_LITERALS[literal]
+
+
+# E2's type-scale lesson, applied to journal interiors: the 6x9 pitch
+# on 8.5x11 looks lost. Factors follow E2's map (geometric mean of the
+# axis ratios, rounded to a clean stop): 8x10 -> 1.2, 8.5x11 -> 1.3.
+# Pitches are pinned per trim as EXACT fractions at those factors —
+# no runtime multiplication mud:
+#   Lined:    5/16"  ->  3/8" (x1.2)  ->  13/32" (x1.3)
+#   Dot grid: 5 mm   ->  6 mm (x1.2)  ->  6.5 mm (x1.3)
+TRIM_TYPE_SCALE: Dict[Tuple[float, float], float] = {
+    (6.0, 9.0): 1.0,
+    (8.0, 10.0): 1.2,
+    (8.5, 11.0): 1.3,
+}
+
+LINE_PITCH_BY_TRIM: Dict[Tuple[float, float], float] = {
+    (6.0, 9.0): 5.0 / 16.0,
+    (8.0, 10.0): 3.0 / 8.0,
+    (8.5, 11.0): 13.0 / 32.0,
+}
+
+DOT_PITCH_BY_TRIM: Dict[Tuple[float, float], float] = {
+    (6.0, 9.0): 5.0 / 25.4,
+    (8.0, 10.0): 6.0 / 25.4,
+    (8.5, 11.0): 6.5 / 25.4,
+}
 
 FRONT_MATTER_PAGES = 4          # half-title, blank, title, (c) — PINNED
 TOTAL_MIN = 24                  # KDP floor, TOTAL pages
@@ -116,21 +192,24 @@ class LiveArea:
         return self.y1 - self.y0
 
 
-def live_area(total: int, page_number: int) -> LiveArea:
+def live_area(total: int, page_number: int,
+              trim: Tuple[float, float] = REFERENCE_TRIM) -> LiveArea:
     """Live area for 1-based printed page number. Odd = recto (inside
     margin on the LEFT edge of the sheet as bound = left side of a
     recto), even = verso (inside on the right). Derived from
     (trim, TOTAL) — rev B: a grid compliant at one TOTAL must
-    re-derive, not reuse, at another."""
+    re-derive, not reuse, at another. Margins are physical (KDP's
+    floors don't scale with trim); only the sheet grows."""
     inside = inside_margin_for_total(total)
     recto = page_number % 2 == 1
     left = inside if recto else OUTSIDE_MARGIN_IN
     right = OUTSIDE_MARGIN_IN if recto else inside
+    trim_w, trim_h = trim
     return LiveArea(
         x0=left,
         y0=BOTTOM_MARGIN_IN,
-        x1=TRIM_W_IN - right,
-        y1=TRIM_H_IN - TOP_MARGIN_IN,
+        x1=trim_w - right,
+        y1=trim_h - TOP_MARGIN_IN,
     )
 
 

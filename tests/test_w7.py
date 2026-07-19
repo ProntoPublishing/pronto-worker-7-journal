@@ -335,13 +335,14 @@ class TestWorker(unittest.TestCase):
         self.assertIn("metadata incomplete", result["review_reason"])
 
     def test_unsupported_trim_holds(self):
+        # 5x8 stays docketed with E2's — outside the pinned table -> hold.
         p = _make_processor(bm={"Book Title": "T", "Author Name": "A",
                                 "Trim Size": {"name": "5x8"},
                                 "Low-Content Template": {"name": "Lined"},
                                 "Low-Content Page Count": 120})
         result = p.process_service("svcJournal")
         self.assertEqual(result.get("status"), "Review")
-        self.assertIn("not supported in v0", result["review_reason"])
+        self.assertIn("not in the pinned trim table", result["review_reason"])
 
     def test_self_check_fails_w7_004(self):
         # Module-attribute swap (the W6 harness pattern): a doctored
