@@ -14,6 +14,7 @@ import threading
 from flask import Flask, jsonify, request
 
 from pronto_worker_7 import JournalProcessor, WORKER_VERSION
+from qa import QA_VERSION, QAConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +31,8 @@ def health():
         'status': 'healthy',
         'service': 'worker_7_journal',
         'version': WORKER_VERSION,
+        'qa_version': QA_VERSION,
+        'qa_gating_enabled': QAConfig.from_env().gating_enabled,
     })
 
 

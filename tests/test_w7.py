@@ -424,5 +424,73 @@ class TestWorker(unittest.TestCase):
         p.airtable_client.update_service.assert_not_called()
 
 
+class TestQAIntegration(unittest.TestCase):
+    """QA Reviewer v0 contract: fields stamped on the final write;
+    report-only stays inert; gating holds at Review + Blocked."""
+
+    def _wire_r2(self, p):
+        # head_object answers with the true uploaded length so the
+        # r2_object check passes (a bare MagicMock reads as a size
+        # mismatch — same truthy trap as the E4 mocks).
+        uploaded = {}
+
+        def fake_upload(object_key, data, content_type=None):
+            uploaded[object_key] = len(data)
+            return {"public_url": "https://r2/i"}
+
+        p.r2_client.upload_file_bytes.side_effect = fake_upload
+        p.r2_client.bucket_name = "pronto-artifacts"
+        p.r2_client.s3_client.head_object.side_effect = (
+            lambda Bucket, Key: {"ContentLength": uploaded[Key]})
+        return p
+
+    def test_qa_pass_stamped_on_complete(self):
+        p = self._wire_r2(_make_processor())
+        result = p.process_service("svcJournal")
+        self.assertEqual(result.get("status"), "Complete", result)
+        self.assertTrue(result["qa_passed"])
+        fields = p.airtable_client.update_service.call_args_list[-1].args[1]
+        self.assertEqual(fields["QA Status"], "Pass")
+        self.assertIn("PASS page_count", fields["QA Report"])
+        self.assertIn("PASS page_geometry", fields["QA Report"])
+        self.assertIn("PASS gutter_declared", fields["QA Report"])
+        self.assertIn("PASS r2_object", fields["QA Report"])
+        self.assertNotIn("Blocked", fields)
+
+    def test_qa_report_only_fail_is_inert(self):
+        # Missing R2 object = hard fail, but gating is off by default:
+        # service still Completes, QA Status stays Pending (absent).
+        p = _make_processor()
+        p.r2_client.bucket_name = "pronto-artifacts"
+        err = Exception("missing")
+        err.response = {"Error": {"Code": "404"}}
+        p.r2_client.s3_client.head_object.side_effect = err
+        result = p.process_service("svcJournal")
+        self.assertEqual(result.get("status"), "Complete", result)
+        self.assertFalse(result["qa_passed"])
+        fields = p.airtable_client.update_service.call_args_list[-1].args[1]
+        self.assertNotIn("QA Status", fields)
+        self.assertIn("Fail (report-only)", fields["QA Report"])
+        self.assertNotIn("Blocked", fields)
+
+    def test_qa_gating_fail_holds_at_review(self):
+        p = _make_processor()
+        p.r2_client.bucket_name = "pronto-artifacts"
+        err = Exception("missing")
+        err.response = {"Error": {"Code": "404"}}
+        p.r2_client.s3_client.head_object.side_effect = err
+        with patch.dict(os.environ, {"QA_GATING_ENABLED": "true"}):
+            result = p.process_service("svcJournal")
+        self.assertEqual(result.get("status"), "Review", result)
+        fields = p.airtable_client.update_service.call_args_list[-1].args[1]
+        self.assertEqual(fields["Status"], "Review")
+        self.assertEqual(fields["QA Status"], "Fail")
+        self.assertIs(fields["Blocked"], True)
+        self.assertIn("r2_object", fields["Blocked Reason"])
+        # artifact fields still written — ship-reviewable-output posture
+        self.assertEqual(fields["Artifact Type"], "Interior PDF")
+        self.assertIn("Artifact URL", fields)
+
+
 if __name__ == "__main__":
     unittest.main()

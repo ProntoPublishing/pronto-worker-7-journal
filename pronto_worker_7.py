@@ -42,8 +42,9 @@ from pypdf import PdfReader
 from geometry import (
     BODY_MAX, BODY_MIN, DEFAULT_BODY_PAGES, POINTS_PER_INCH,
     TOTAL_MAX, TOTAL_MIN, TRIM_CANONICAL, TEMPLATES,
-    TrimRejectedError, parse_trim, total_pages,
+    TrimRejectedError, inside_margin_for_total, parse_trim, total_pages,
 )
+import qa
 from imprint import ImprintNotEligibleError, resolve_imprint
 from manifest import build_journal_manifest
 from render import PromptOverflowError, build_interior
@@ -56,7 +57,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WORKER_VERSION = "7.2.0-a1"
+WORKER_VERSION = "7.3.0-a1"
 
 _PAGE_SIZE_TOL_PT = 0.01     # exactness at float-compare granularity
 
@@ -272,6 +273,18 @@ class JournalProcessor:
         except Exception as e:
             raise HardFailError(f"artifact write failure: {e}")
 
+        # --- QA review (QA_Reviewer v0) — validates the produced
+        # artifact; report-only unless QA_GATING_ENABLED (soak §8) ---
+        qa_config = qa.QAConfig.from_env()
+        qa_result = qa.review(
+            artifact=pdf_bytes,
+            spec=qa.QASpec(
+                artifact_type="Interior PDF", trim=trim, page_count=total,
+                inside_margin_in=inside_margin_for_total(total),
+                r2_key=pdf_key),
+            r2=self.r2_client, config=qa_config)
+        qa_blocked = qa_result.should_block(qa_config)
+
         duration = (datetime.now(timezone.utc) - started_at).total_seconds()
         notes = {
             "template": template,
@@ -285,22 +298,31 @@ class JournalProcessor:
         }
         if warnings:
             notes["warnings"] = warnings
-        self.airtable_client.update_service(service_id, {
-            "Status": "Complete",
+        status = "Review" if qa_blocked else "Complete"
+        fields = {
+            "Status": status,
             "Finished At": datetime.now(timezone.utc).isoformat(),
             "Artifact URL": pdf_up["public_url"],
             "Artifact Key": pdf_key,
             "Artifact Type": "Interior PDF",
             "Interior Page Count": total,
             "Operator Notes": f"Journal build: {json.dumps(notes, indent=2)}",
-        }, typecast=True)
+        }
+        fields.update(qa_result.airtable_fields(qa_config))
+        if qa_blocked:
+            fields.update(qa_result.blocked_fields())
+        self.airtable_client.update_service(service_id, fields,
+                                            typecast=True)
 
-        logger.info("Done: Complete")
+        logger.info(f"Done: {status} (qa: "
+                    f"{'pass' if qa_result.passed else 'fail'}, "
+                    f"{qa_config.mode})")
         return {"success": True, "service_id": service_id,
-                "status": "Complete", "interior_url": pdf_up["public_url"],
+                "status": status, "interior_url": pdf_up["public_url"],
                 "manifest_url": manifest_up["public_url"],
                 "template": template, "body_pages": body,
-                "total_pages": total, "duration_seconds": duration}
+                "total_pages": total, "duration_seconds": duration,
+                "qa_passed": qa_result.passed}
 
     # ------------------------------------------------------------------
     # Helpers
