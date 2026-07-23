@@ -57,7 +57,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-WORKER_VERSION = "7.3.0-a1"
+WORKER_VERSION = "7.4.0-a1"
 
 _PAGE_SIZE_TOL_PT = 0.01     # exactness at float-compare granularity
 

@@ -40,28 +40,19 @@ REFERENCE_TRIM: Tuple[float, float] = (TRIM_W_IN, TRIM_H_IN)
 # Airtable data; the three-spellings lesson stands). Anything outside
 # this table HOLDs in the worker — no silently-plausible untested
 # geometry. 5x8 / 5.5x8.5 remain docketed with E2's.
-ACCEPTED_TRIM_LITERALS: Dict[str, Tuple[float, float]] = {
-    '6x9': (6.0, 9.0),
-    '6 x 9': (6.0, 9.0),
-    '6" x 9"': (6.0, 9.0),
-    '6" × 9"': (6.0, 9.0),
-    '8x10': (8.0, 10.0),
-    '8 x 10': (8.0, 10.0),
-    '8" x 10"': (8.0, 10.0),
-    '8" × 10"': (8.0, 10.0),
-    '8.5x11': (8.5, 11.0),
-    '8.5 x 11': (8.5, 11.0),
-    '8.5" x 11"': (8.5, 11.0),
-    '8.5" × 11"': (8.5, 11.0),
-}
+# Trims v0 (2026-07-23): sourced from the vendored trims.py registry
+# (JOURNAL_TRIMS). W7's four-spelling table was the fleet's widest —
+# the registry adopted it fleet-wide, so this re-point is
+# byte-equivalent for every previously accepted literal.
+from trims import JOURNAL_TRIM_NAMES, JOURNAL_TRIMS as _JOURNAL_TRIMS
+from trims import canonical_by_dims as _canonical_by_dims
+
+ACCEPTED_TRIM_LITERALS: Dict[str, Tuple[float, float]] = dict(_JOURNAL_TRIMS)
 
 # Canonical short name per dims — manifests and Operator Notes speak
 # one spelling regardless of which literal the form sent.
-TRIM_CANONICAL: Dict[Tuple[float, float], str] = {
-    (6.0, 9.0): "6x9",
-    (8.0, 10.0): "8x10",
-    (8.5, 11.0): "8.5x11",
-}
+TRIM_CANONICAL: Dict[Tuple[float, float], str] = _canonical_by_dims(
+    JOURNAL_TRIM_NAMES)
 
 
 class TrimRejectedError(ValueError):
