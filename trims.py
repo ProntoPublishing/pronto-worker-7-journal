@@ -37,10 +37,11 @@ Author: Pronto Publishing
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Tuple
 
-TRIMS_VERSION = "1.0.0"
+TRIMS_VERSION = "1.1.0"
 
 POINTS_PER_INCH = 72.0
 BLEED_IN = 0.125
+MM_PER_INCH = 25.4
 
 # Inches of spine per page (KDP spec G201953020; no additive constant
 # — that is a hardcover-only term some calculators wrongly apply).
@@ -61,6 +62,51 @@ GUTTER_BRACKETS: Tuple[Tuple[int, int, float], ...] = (
     (501, 700, 0.75),
     (701, 828, 0.875),
 )
+
+# ---------------------------------------------------------------------------
+# Hardcover (KDP case laminate) — Hardcover_v0 work order 2026-07-23.
+# Every constant below was extracted from KDP's OWN cover-calculator
+# (configuration blob + a 17-probe sweep of the measurements endpoint,
+# 2026-07-23; sweep archived as the golden table in tests/test_trims.py).
+# The underlying spec is METRIC; we store exact inch conversions.
+# Model (verified to 3dp against every probe):
+#   full width  = 2*wrap + 2*panel_w + spine
+#   full height = 2*wrap + panel_h
+#   panel       = (trim_w + 5mm) x (trim_h + 6mm)   # board incl. joint
+#   spine       = pages * paper_factor + 4.8mm      # board constant;
+#                 same three paper factors as paperback
+#   hinge       = 10mm text-free zone INSIDE each panel flanking the
+#                 spine — NOT an additive width term
+#   Bounds: 76-550 pages (calculator config; help prose says 75 — the
+#   calculator is the enforcing artifact). All three papers offered.
+#   No separate hardcover gutter table — paperback brackets apply.
+
+HC_WRAP_IN = 15.0 / MM_PER_INCH                 # 0.5906 (calc: 0.591)
+HC_PANEL_EXTRA_W_IN = 5.0 / MM_PER_INCH         # 0.1969 (calc: 0.197)
+HC_PANEL_EXTRA_H_IN = 6.0 / MM_PER_INCH         # 0.2362 (calc: 0.236)
+HC_HINGE_IN = 10.0 / MM_PER_INCH                # 0.3937 (calc: 0.394)
+HC_SPINE_BOARD_IN = 4.8 / MM_PER_INCH           # 0.1890 (fits all probes)
+HC_SPINE_SAFE_MARGIN_IN = 0.0625                # per side (calc: 0.062)
+HC_BARCODE_MARGIN_SPINE_IN = 0.25               # keep-out from spine
+HC_BARCODE_MARGIN_BOTTOM_IN = 0.375             # keep-out from bottom
+HC_MIN_PAGES = 76
+HC_MAX_PAGES = 550
+
+
+def hardcover_spine_width_in(page_count: int, paper: str) -> float:
+    return (page_count * PAPER_FACTORS_IN_PER_PAGE[
+        (paper or "cream").strip().lower()] + HC_SPINE_BOARD_IN)
+
+
+def hardcover_panel_dims_in(trim: Tuple[float, float]) -> Tuple[float, float]:
+    return (trim[0] + HC_PANEL_EXTRA_W_IN, trim[1] + HC_PANEL_EXTRA_H_IN)
+
+
+def hardcover_cover_dims_in(trim: Tuple[float, float],
+                            spine_in: float) -> Tuple[float, float]:
+    panel_w, panel_h = hardcover_panel_dims_in(trim)
+    return (2 * HC_WRAP_IN + 2 * panel_w + spine_in,
+            2 * HC_WRAP_IN + panel_h)
 
 
 @dataclass(frozen=True)
@@ -103,14 +149,14 @@ _SPECS: Tuple[TrimSpec, ...] = (
              "W2 interior reference; W7 journal"),
     TrimSpec("6.14x9.21", 6.14, 9.21, "trade", "live",
              "W2 interior (Trims v0)"),
-    TrimSpec("7x10", 7.0, 10.0, "large", "specced",
-             "spec only — no W2 template yet (flagged, later ticket)"),
+    TrimSpec("7x10", 7.0, 10.0, "large", "live",
+             "hardcover interior (Hardcover v0); paperback cover unshipped"),
     TrimSpec("8x10", 8.0, 10.0, "low-content", "live",
              "W7 journal / W8 coloring (E2)"),
     TrimSpec("8.5x11", 8.5, 11.0, "low-content", "live",
              "W7 journal / W8 coloring (E2)"),
-    TrimSpec("8.25x11", 8.25, 11.0, "large", "dormant",
-             "hardcover-only (future hardcover ticket)"),
+    TrimSpec("8.25x11", 8.25, 11.0, "large", "live",
+             "hardcover-only (Hardcover v0)"),
     TrimSpec("8.5x8.5", 8.5, 8.5, "square", "dormant",
              "children's/photo square (separate project-type ticket)"),
 )
@@ -144,18 +190,44 @@ def canonical_by_dims(names: Iterable[str]) -> Dict[Tuple[float, float], str]:
 
 
 # --- Per-worker supported subsets (parseable != renderable) ---------
+# Since Hardcover v0 the interior/cover/package subsets are keyed by
+# BINDING: a 7x10 order is renderable as hardcover but stays unshipped
+# as paperback (menu governance), so the accept table depends on both.
+
+BINDING_PAPERBACK = "paperback"
+BINDING_HARDCOVER = "hardcover"
 
 INTERIOR_TRIM_NAMES = ("5x8", "5.25x8", "5.5x8.5", "6x9", "6.14x9.21")
+HARDCOVER_TRIM_NAMES = ("5.5x8.5", "6x9", "6.14x9.21", "7x10", "8.25x11")
 COVER_TRIM_NAMES = INTERIOR_TRIM_NAMES + ("8x10", "8.5x11")
 KDPPACK_TRIM_NAMES = COVER_TRIM_NAMES
 JOURNAL_TRIM_NAMES = ("6x9", "8x10", "8.5x11")
 COLORING_TRIM_NAMES = ("8.5x11", "8x10", "6x9")   # W8's curated order
 
 INTERIOR_TRIMS = build_literal_table(INTERIOR_TRIM_NAMES)
+HARDCOVER_TRIMS = build_literal_table(HARDCOVER_TRIM_NAMES)
 COVER_TRIMS = build_literal_table(COVER_TRIM_NAMES)
 KDPPACK_TRIMS = build_literal_table(KDPPACK_TRIM_NAMES)
 JOURNAL_TRIMS = build_literal_table(JOURNAL_TRIM_NAMES)
 COLORING_TRIMS = build_literal_table(COLORING_TRIM_NAMES)
+
+# Interior renderer accept-tables by binding (W2). Cover/package
+# tables by binding: paperback keeps COVER_TRIMS/KDPPACK_TRIMS;
+# hardcover uses HARDCOVER_TRIMS.
+INTERIOR_TRIMS_BY_BINDING = {
+    BINDING_PAPERBACK: INTERIOR_TRIMS,
+    BINDING_HARDCOVER: HARDCOVER_TRIMS,
+}
+INTERIOR_TRIM_NAMES_BY_BINDING = {
+    BINDING_PAPERBACK: INTERIOR_TRIM_NAMES,
+    BINDING_HARDCOVER: HARDCOVER_TRIM_NAMES,
+}
+
+
+def interior_page_bounds(binding: str) -> Tuple[int, int]:
+    if binding == BINDING_HARDCOVER:
+        return (HC_MIN_PAGES, HC_MAX_PAGES)
+    return (INTERIOR_MIN_PAGES, INTERIOR_MAX_PAGES)
 
 
 # --- W2 interior geometry rows (uniform-margins ruling) -------------
@@ -169,6 +241,12 @@ class InteriorGeometry:
     outer_in: float
     title_sink_in: float        # system title page \vspace* sink
     cpl_estimate: Tuple[int, int]   # MEASURED band (corpus renders 2026-07-23)
+    # Hardcover v0 big-trim ruling (Jesse 2026-07-23): large formats
+    # apply E2's type-scale lesson to prose — 12pt class + wider
+    # margins instead of a floating 95-116 CPL measure. Existing rows
+    # keep 11pt/1.066 byte-for-byte.
+    class_pt: int = 11              # LaTeX documentclass point option
+    leading_stretch: float = 1.066  # \setstretch value
 
     @property
     def text_measure_in(self) -> float:
@@ -191,6 +269,19 @@ INTERIOR_GEOMETRY: Dict[str, InteriorGeometry] = {
                             cpl_estimate=(76, 79), **_UNIFORM),
     "6.14x9.21": InteriorGeometry("6.14x9.21", title_sink_in=2.05,
                                   cpl_estimate=(79, 81), **_UNIFORM),
+    # Hardcover v0 large formats (12pt ruling; CPL bands are
+    # metrics-estimates until the build's corpus renders measure them).
+    "7x10": InteriorGeometry("7x10", top_in=0.75, bottom_in=0.85,
+                             inner_in=1.0, outer_in=0.8,
+                             title_sink_in=2.20, cpl_estimate=(78, 84),
+                             class_pt=12),
+    # 8.25x11 margins widened 1.1->1.35 after the first corpus render
+    # measured 95 CPL at the 6.05in measure (2026-07-23); 5.55in
+    # lands ~87 — the ruling's high-80s with the 1.15 open leading.
+    "8.25x11": InteriorGeometry("8.25x11", top_in=0.75, bottom_in=0.85,
+                                inner_in=1.35, outer_in=1.35,
+                                title_sink_in=2.45, cpl_estimate=(85, 90),
+                                class_pt=12, leading_stretch=1.15),
 }
 
 

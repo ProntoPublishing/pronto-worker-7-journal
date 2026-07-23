@@ -41,7 +41,7 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 from pypdf.generic import IndirectObject
 
-QA_VERSION = "0.1.0"
+QA_VERSION = "0.2.0"
 
 POINTS_PER_INCH = 72.0
 BLEED_IN = 0.125
@@ -53,6 +53,17 @@ PDF_HEADER_SCAN = 1024                  # %PDF- header may sit after a BOM/prefi
 
 INTERIOR_MIN_PAGES = 24                 # KDP paperback bounds
 INTERIOR_MAX_PAGES = 828
+HARDCOVER_MIN_PAGES = 76                # KDP case-laminate bounds (0.2.0,
+HARDCOVER_MAX_PAGES = 550               # from KDP's own cover calculator)
+
+# Hardcover (case laminate) cover model — RE-DERIVED here from KDP's
+# published metric spec (wrap 15mm; panel = trim + 5mm x trim + 6mm;
+# spine = pages x paper factor + 4.8mm board), never imported from a
+# worker's geometry: if their math drifts, QA catches it.
+HC_WRAP_IN = 15.0 / 25.4
+HC_PANEL_EXTRA_W_IN = 5.0 / 25.4
+HC_PANEL_EXTRA_H_IN = 6.0 / 25.4
+HC_SPINE_BOARD_IN = 4.8 / 25.4
 
 # KDP spine factors, inches per page (KDP paperback build spec).
 PAPER_FACTORS_IN_PER_PAGE = {
@@ -118,6 +129,7 @@ class QASpec:
     sibling_interior_sha256: Optional[str] = None           # zip chain of custody
     sibling_cover_sha256: Optional[str] = None
     r2_key: Optional[str] = None                # uploaded object key, for check 9
+    binding: str = "paperback"                  # paperback | hardcover (0.2.0)
 
 
 @dataclass(frozen=True)
@@ -356,9 +368,13 @@ def check_page_count(facts: PdfFacts, spec: QASpec) -> QAVerdict:
                              f"cover must be 1 page, found {n}")
         return QAVerdict("page_count", True, "pass", "1 page")
     problems = []
-    if not (INTERIOR_MIN_PAGES <= n <= INTERIOR_MAX_PAGES):
-        problems.append(f"{n} pages outside KDP bounds "
-                        f"{INTERIOR_MIN_PAGES}-{INTERIOR_MAX_PAGES}")
+    if spec.binding == "hardcover":
+        lo, hi = HARDCOVER_MIN_PAGES, HARDCOVER_MAX_PAGES
+    else:
+        lo, hi = INTERIOR_MIN_PAGES, INTERIOR_MAX_PAGES
+    if not (lo <= n <= hi):
+        problems.append(f"{n} pages outside KDP {spec.binding} bounds "
+                        f"{lo}-{hi}")
     if n != spec.page_count:
         problems.append(f"counted {n} != expected {spec.page_count}")
     if problems:
@@ -367,10 +383,17 @@ def check_page_count(facts: PdfFacts, spec: QASpec) -> QAVerdict:
 
 
 def expected_cover_dims(page_count: int, paper: str,
-                        trim: Tuple[float, float]) -> Tuple[float, float]:
+                        trim: Tuple[float, float],
+                        binding: str = "paperback") -> Tuple[float, float]:
     factor = PAPER_FACTORS_IN_PER_PAGE[(paper or "cream").strip().lower()]
-    spine = page_count * factor
     trim_w, trim_h = trim
+    if binding == "hardcover":
+        spine = page_count * factor + HC_SPINE_BOARD_IN
+        panel_w = trim_w + HC_PANEL_EXTRA_W_IN
+        panel_h = trim_h + HC_PANEL_EXTRA_H_IN
+        return (2 * HC_WRAP_IN + 2 * panel_w + spine,
+                2 * HC_WRAP_IN + panel_h)
+    spine = page_count * factor
     return (BLEED_IN + trim_w + spine + trim_w + BLEED_IN,
             BLEED_IN + trim_h + BLEED_IN)
 
@@ -381,18 +404,20 @@ def check_page_geometry(facts: PdfFacts, spec: QASpec) -> QAVerdict:
         if paper not in PAPER_FACTORS_IN_PER_PAGE:
             return QAVerdict("page_geometry", False, "fail",
                              f"unknown paper stock {paper!r}")
-        exp_w, exp_h = expected_cover_dims(spec.page_count, paper, spec.trim)
+        exp_w, exp_h = expected_cover_dims(spec.page_count, paper, spec.trim,
+                                           spec.binding)
         got_w, got_h = facts.page_sizes_pt[0]
         got_w_in, got_h_in = got_w / POINTS_PER_INCH, got_h / POINTS_PER_INCH
         if (abs(got_w_in - exp_w) > DIM_TOL_IN
                 or abs(got_h_in - exp_h) > DIM_TOL_IN):
             return QAVerdict(
                 "page_geometry", False, "fail",
-                f"wrap is {got_w_in:.4f}x{got_h_in:.4f}in, expected "
-                f"{exp_w:.4f}x{exp_h:.4f}in (trim {spec.trim[0]}x"
+                f"{spec.binding} cover is {got_w_in:.4f}x{got_h_in:.4f}in, "
+                f"expected {exp_w:.4f}x{exp_h:.4f}in (trim {spec.trim[0]}x"
                 f"{spec.trim[1]}, {spec.page_count}pp {paper})")
         return QAVerdict("page_geometry", True, "pass",
-                         f"full wrap {exp_w:.4f}x{exp_h:.4f}in")
+                         f"{spec.binding} full cover "
+                         f"{exp_w:.4f}x{exp_h:.4f}in")
     # Interior: every page exactly trim (W2/W7/W8 render no-bleed
     # trim-exact — validated as-shipped; full-bleed language in the
     # work order is a spec erratum flagged to governance).
@@ -486,6 +511,13 @@ def check_spine_posture(spec: QASpec) -> QAVerdict:
     factor = PAPER_FACTORS_IN_PER_PAGE.get(
         (spec.paper or "cream").strip().lower())
     spine = spec.page_count * factor if factor else None
+    if spec.binding == "hardcover":
+        if spine is not None:
+            spine += HC_SPINE_BOARD_IN
+        detail = f"hardcover spine text gated on legibility only"
+        if spine is not None:
+            detail += f" (board-padded spine {spine:.4f}in)"
+        return QAVerdict("spine_posture", True, "note", detail)
     if spec.page_count >= SPINE_TEXT_MIN_PAGES:
         detail = f"spine text permitted ({spec.page_count}pp"
         if spine is not None:
@@ -657,7 +689,8 @@ def review(*, artifact: Union[bytes, str, os.PathLike], spec: QASpec,
                 if "interior.pdf" in names:
                     interior_spec = QASpec(
                         artifact_type=ARTIFACT_INTERIOR, trim=spec.trim,
-                        page_count=spec.page_count, paper=spec.paper)
+                        page_count=spec.page_count, paper=spec.paper,
+                        binding=spec.binding)
                     for v in _review_pdf(zf.read("interior.pdf"),
                                          interior_spec, gutter=True):
                         verdicts.append(QAVerdict(
@@ -666,7 +699,8 @@ def review(*, artifact: Union[bytes, str, os.PathLike], spec: QASpec,
                 if "cover.pdf" in names:
                     cover_spec = QASpec(
                         artifact_type=ARTIFACT_COVER, trim=spec.trim,
-                        page_count=spec.page_count, paper=spec.paper)
+                        page_count=spec.page_count, paper=spec.paper,
+                        binding=spec.binding)
                     for v in _review_pdf(zf.read("cover.pdf"),
                                          cover_spec, gutter=False):
                         verdicts.append(QAVerdict(

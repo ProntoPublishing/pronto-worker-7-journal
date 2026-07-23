@@ -442,5 +442,63 @@ class TestDriverAndReport(unittest.TestCase):
             self.assertFalse(QAConfig.from_env().gating_enabled)
 
 
+class TestHardcoverBinding(unittest.TestCase):
+    """qa 0.2.0: binding-aware cover geometry + page bounds. Expected
+    hardcover dims re-derived from KDP's metric spec (wrap 15mm, panel
+    +5/+6mm, spine board 4.8mm)."""
+
+    def _hc_cover_bytes(self, trim=(6.0, 9.0), pages=200):
+        exp_w, exp_h = qa.expected_cover_dims(pages, "white", trim,
+                                              "hardcover")
+        data = blank_pdf_bytes(pages=1, width_pt=exp_w * 72.0,
+                               height_pt=exp_h * 72.0)
+        return data + b" " * max(0, qa.MIN_PDF_BYTES + 64 - len(data))
+
+    def test_hardcover_expected_dims_match_kdp_goldens(self):
+        # KDP calculator: 6x9 200pp white -> 14.214 x 10.417
+        w, h = qa.expected_cover_dims(200, "white", (6.0, 9.0), "hardcover")
+        self.assertAlmostEqual(round(w, 3), 14.214, places=3)
+        self.assertAlmostEqual(round(h, 3), 10.417, places=3)
+        # 8.25x11 -> 18.714 x 12.417
+        w, h = qa.expected_cover_dims(200, "white", (8.25, 11.0), "hardcover")
+        self.assertAlmostEqual(round(w, 3), 18.714, places=3)
+        self.assertAlmostEqual(round(h, 3), 12.417, places=3)
+
+    def test_hardcover_cover_passes_as_hardcover_fails_as_paperback(self):
+        data = self._hc_cover_bytes()
+        hc_spec = QASpec(artifact_type=ARTIFACT_COVER, trim=(6.0, 9.0),
+                         page_count=200, paper="white", binding="hardcover")
+        pb_spec = QASpec(artifact_type=ARTIFACT_COVER, trim=(6.0, 9.0),
+                         page_count=200, paper="white")
+        hc = review(artifact=data, spec=hc_spec, config=QAConfig())
+        self.assertTrue(hc.passed, hc.report_lines())
+        pb = review(artifact=data, spec=pb_spec, config=QAConfig())
+        self.assertIn("page_geometry",
+                      {v.check for v in pb.hard_fails})
+
+    def test_hardcover_page_bounds(self):
+        for n, ok in ((75, False), (76, True), (550, True), (551, False)):
+            facts_n = facts(page_count=n)
+            v = check_page_count(
+                facts_n, QASpec(artifact_type=ARTIFACT_INTERIOR,
+                                trim=TRIM_6X9, page_count=n,
+                                binding="hardcover"))
+            self.assertEqual(v.ok, ok, n)
+        # paperback bounds unchanged: 100pp fine, 24 fine
+        v = check_page_count(facts(page_count=24),
+                             spec(page_count=24))
+        self.assertTrue(v.ok)
+
+    def test_hardcover_spine_posture_note(self):
+        v = check_spine_posture(QASpec(artifact_type=ARTIFACT_COVER,
+                                       trim=TRIM_6X9, page_count=76,
+                                       paper="white", binding="hardcover"))
+        self.assertEqual(v.severity, "note")
+        self.assertIn("legibility", v.detail)
+
+    def test_default_binding_is_paperback(self):
+        self.assertEqual(spec().binding, "paperback")
+
+
 if __name__ == "__main__":
     unittest.main()
